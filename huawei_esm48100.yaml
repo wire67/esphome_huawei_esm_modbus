@@ -1,0 +1,1064 @@
+# ============================================================
+# ESPHome - Huawei ESM-48100 BMS via RS485 Modbus RTU
+# ============================================================
+#
+# HARDWARE REQUIRED:
+#   - ESP32 dev board (ESP32-WROOM or similar)
+#   - MAX485 / SP3485 RS485 transceiver module
+#
+# WIRING (ESP32 <-> MAX485 module):
+#   ESP32 GPIO16 (TX2)  --> DI  (Data In)
+#   ESP32 GPIO17 (RX2)  --> RO  (Receiver Output)
+#   ESP32 GPIO4         --> DE + RE (tied together, flow control)
+#   3.3V                --> VCC
+#   GND                 --> GND
+#
+# WIRING (MAX485 <-> ESM-48100 RJ45 COM port):
+#   A+ (MAX485)  --> Pin 1: RS485 T+  (or Pin 4: RS485 R+)
+#   B- (MAX485)  --> Pin 2: RS485 T-  (or Pin 5: RS485 R-)
+#   Use a 120Ω termination resistor at the far end of the bus.
+#
+# RJ45 PIN REFERENCE (ESM-48100 COM port):
+#   Pin 1 - RS485 T+
+#   Pin 2 - RS485 T-
+#   Pin 3 - NC (reserved)
+#   Pin 4 - RS485 R+
+#   Pin 5 - RS485 R-
+#   Pin 6 - NC (reserved)
+#   Pin 7 - CANH (CAN - not used here)
+#   Pin 8 - CANL (CAN - not used here)
+#
+# MODBUS SETTINGS:
+#   Protocol : Modbus RTU
+#   Baud rate: 9600 bps
+#   Data bits: 8
+#   Parity   : None
+#   Stop bits: 1
+#   Default slave address: 214
+#
+# VERIFIED REGISTER MAP (ESM-48100U2/U5)
+# ============================================================
+
+esphome:
+  name: huawei-esm48100
+  friendly_name: Huawei ESM-48100 Battery
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging (disable serial logging to free UART0 if needed)
+logger:
+  baud_rate: 0    # disables serial logging so UART0 is free
+  level: VERBOSE
+
+# Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+# OTA updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "ESM48100 Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+# ─── UART for RS485 ────────────────────────────────────────
+uart:
+  id: uart_modbus
+  tx_pin: GPIO16
+  rx_pin: GPIO17
+  baud_rate: 9600
+  stop_bits: 1
+  data_bits: 8
+  parity: NONE
+
+# ─── Modbus ────────────────────────────────────────────────
+modbus:
+  id: modbus_esm
+  uart_id: uart_modbus
+  send_wait_time: 250ms
+
+# ─── Modbus Controller ─────────────────────────────────────
+modbus_controller:
+  - id: esm_bms
+    address: 214
+    modbus_id: modbus_esm
+    setup_priority: -10
+    update_interval: 5s
+
+# ─── Sensors ───────────────────────────────────────────────
+sensor:
+
+  # --- Battery Voltage (Register 0) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Battery Voltage"
+    id: battery_voltage
+    register_type: holding
+    address: 0
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
+          ignore_out_of_range: true
+
+
+  # --- Pack Voltage (Register 1) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Pack Voltage"
+    id: pack_voltage
+    register_type: holding
+    address: 1
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
+          ignore_out_of_range: true
+
+  # --- Battery Current (Register 2, signed) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Battery Current"
+    id: battery_current
+    register_type: holding
+    address: 2
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+      - clamp:
+          min_value: -500.0
+          max_value: 500.0
+          ignore_out_of_range: true
+
+  # --- State of Charge (Register 3) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Battery SOC"
+    id: battery_soc
+    register_type: holding
+    address: 3
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 0
+
+  # --- State of Health (Register 4) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Battery SOH"
+    id: battery_soh
+    register_type: holding
+    address: 4
+    unit_of_measurement: "%"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 0
+
+  # --- Highest Cell Temperature (Register 5, signed) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Highest Cell Temperature"
+    id: highest_cell_temp
+    register_type: holding
+    address: 5
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  # --- Lowest Cell Temperature (Register 6, signed) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Lowest Cell Temperature"
+    id: lowest_cell_temp
+    register_type: holding
+    address: 6
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  # --- Discharge Ah ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Discharge Ah"
+    id: discharge_ah
+    register_type: holding
+    address: 67
+    unit_of_measurement: "Ah"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 0
+    filters:
+      - clamp:
+          min_value: 0
+          max_value: 65534
+          ignore_out_of_range: true
+
+  # --- Cycle Count ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cycle Count"
+    id: cycle_count
+    register_type: holding
+    address: 32108 # *** unconfirmed ***
+    unit_of_measurement: "Cycles"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 0
+    filters:
+      - clamp:
+          min_value: 0
+          max_value: 65534
+          ignore_out_of_range: true
+
+  # --- Discharge Times ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Discharge Times"
+    id: discharge_times
+    register_type: holding
+    address: 69
+    unit_of_measurement: "Times"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  # --- Limit Coef ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Discharge Limit Coef"
+    id: discharge_limit_coef
+    register_type: holding
+    address: 4107
+    unit_of_measurement: "C"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Charge Limit Coef"
+    id: charge_limit_coef
+    register_type: holding
+    address: 4109
+    unit_of_measurement: "C"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Default Charge Limit Coef"
+    id: default_charge_limit_coef
+    register_type: holding
+    address: 4123
+    unit_of_measurement: "C"
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+    entity_category: diagnostic
+
+
+  # --- Temperature Sensors (Registers 18-32) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 1"
+    id: temp_sensor_01
+    register_type: holding
+    address: 18
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 2"
+    id: temp_sensor_02
+    register_type: holding
+    address: 19
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 3"
+    id: temp_sensor_03
+    register_type: holding
+    address: 20
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 4"
+    id: temp_sensor_04
+    register_type: holding
+    address: 21
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 5"
+    id: temp_sensor_05
+    register_type: holding
+    address: 22
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 6"
+    id: temp_sensor_06
+    register_type: holding
+    address: 23
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 7"
+    id: temp_sensor_07
+    register_type: holding
+    address: 24
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 8"
+    id: temp_sensor_08
+    register_type: holding
+    address: 25
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 9"
+    id: temp_sensor_09
+    register_type: holding
+    address: 26
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 10"
+    id: temp_sensor_10
+    register_type: holding
+    address: 27
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 11"
+    id: temp_sensor_11
+    register_type: holding
+    address: 28
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 12"
+    id: temp_sensor_12
+    register_type: holding
+    address: 29
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 13"
+    id: temp_sensor_13
+    register_type: holding
+    address: 30
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 14"
+    id: temp_sensor_14
+    register_type: holding
+    address: 31
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Temperature Sensor 15"
+    id: temp_sensor_15
+    register_type: holding
+    address: 32
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: S_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - clamp:
+          min_value: -50.0
+          max_value: 200.0
+          ignore_out_of_range: true
+
+  # --- Cell Voltages (Registers 34-48, 15 cells) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 1 Voltage"
+    id: cell_01_voltage
+    register_type: holding
+    address: 34
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 2 Voltage"
+    id: cell_02_voltage
+    register_type: holding
+    address: 35
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 3 Voltage"
+    id: cell_03_voltage
+    register_type: holding
+    address: 36
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 4 Voltage"
+    id: cell_04_voltage
+    register_type: holding
+    address: 37
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 5 Voltage"
+    id: cell_05_voltage
+    register_type: holding
+    address: 38
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 6 Voltage"
+    id: cell_06_voltage
+    register_type: holding
+    address: 39
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 7 Voltage"
+    id: cell_07_voltage
+    register_type: holding
+    address: 40
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 8 Voltage"
+    id: cell_08_voltage
+    register_type: holding
+    address: 41
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 9 Voltage"
+    id: cell_09_voltage
+    register_type: holding
+    address: 42
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 10 Voltage"
+    id: cell_10_voltage
+    register_type: holding
+    address: 43
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 11 Voltage"
+    id: cell_11_voltage
+    register_type: holding
+    address: 44
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 12 Voltage"
+    id: cell_12_voltage
+    register_type: holding
+    address: 45
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 13 Voltage"
+    id: cell_13_voltage
+    register_type: holding
+    address: 46
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 14 Voltage"
+    id: cell_14_voltage
+    register_type: holding
+    address: 47
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Cell 15 Voltage"
+    id: cell_15_voltage
+    register_type: holding
+    address: 48
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+      - clamp:
+          min_value: 0.0
+          max_value: 5.0
+          ignore_out_of_range: true
+    entity_category: diagnostic
+
+  # --- Status Registers (10, 12, 13, 14 - diagnostic) ---
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Battery Status"
+    id: status_10
+    register_type: holding
+    address: 10
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Status Register 12"
+    id: status_12
+    register_type: holding
+    address: 12
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Status Register 13"
+    id: status_13
+    register_type: holding
+    address: 13
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Status Register 14"
+    id: status_14
+    register_type: holding
+    address: 14
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Status Register 74"
+    id: status_74
+    register_type: holding
+    address: 74
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Status Register 1329"
+    id: status_1329
+    register_type: holding
+    address: 1329
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: modbus_controller
+    modbus_controller_id: esm_bms
+    name: "Capacity"
+    id: nominal_capacity
+    unit_of_measurement: "Wh"
+    register_type: holding
+    address: 32152 ## or 32153 or 32155
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  # --- Calculated Power ---
+  - platform: template
+    name: "Battery Power"
+    id: battery_power
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    lambda: |-
+      if (id(battery_voltage).has_state() && id(battery_current).has_state()) {
+        return id(battery_voltage).state * id(battery_current).state;
+      }
+      return NAN;
+    update_interval: 10s
+  # --- Cell Voltage Delta (max - min) ---
+  - platform: template
+    name: "Cell Voltage Delta"
+    id: cell_voltage_delta
+    unit_of_measurement: "V"
+    state_class: measurement
+    accuracy_decimals: 3
+    lambda: |-
+      float min_v = NAN;
+      float max_v = NAN;
+      auto cells = std::array<esphome::modbus_controller::ModbusSensor*, 15>{
+        id(cell_01_voltage), id(cell_02_voltage), id(cell_03_voltage),
+        id(cell_04_voltage), id(cell_05_voltage), id(cell_06_voltage),
+        id(cell_07_voltage), id(cell_08_voltage), id(cell_09_voltage),
+        id(cell_10_voltage), id(cell_11_voltage), id(cell_12_voltage),
+        id(cell_13_voltage), id(cell_14_voltage), id(cell_15_voltage)
+      };
+      for (auto *cell : cells) {
+        if (cell->has_state()) {
+          float v = cell->state;
+          if (isnan(min_v) || v < min_v) min_v = v;
+          if (isnan(max_v) || v > max_v) max_v = v;
+        }
+      }
+      if (!isnan(min_v) && !isnan(max_v)) {
+        return max_v - min_v;
+      }
+      return NAN;
+    update_interval: 10s
+    entity_category: diagnostic
+
+
+  # --- Remaining Capacity in Wh ---
+  - platform: template
+    name: "Remaining Capacity"
+    id: remaining_capacity
+    unit_of_measurement: "Wh"
+    state_class: measurement
+    accuracy_decimals: 1
+    lambda: |-
+      if (id(nominal_capacity).has_state() && id(battery_soc).has_state()) {
+        // nominal_capacity is in Wh, battery_soc is in %
+        float cap = id(nominal_capacity).state;
+        float soc = id(battery_soc).state;
+        float soh = id(battery_soh).state;
+        return cap * (soc / 100.0f) * (soh / 100.0f);
+      }
+      return NAN;
+    update_interval: 10s
+    entity_category: diagnostic
+
+# ─── Binary Sensors (status decoding) ──────────────────────
+binary_sensor:
+
+  # Status 10: 1=not charging, 0=charging, 3=fault
+  - platform: template
+    name: "BMS Charging"
+    id: bms_charging
+    device_class: battery_charging
+    lambda: |-
+      if (id(status_10).has_state()) {
+        int s = int(id(status_10).state);
+        return s == 0;  // 0 = charging
+      }
+      return false;
+
+  # Status 14: 3=not charging, 2=charging, 1=fault
+  - platform: template
+    name: "BMS Discharging"
+    id: bms_discharging
+    lambda: |-
+      if (id(status_14).has_state()) {
+        int s = int(id(status_14).state);
+        return s == 2;  // 2 = discharging
+      }
+      return false;
+
+  # Fault detection from status registers
+  - platform: template
+    name: "BMS Fault"
+    id: bms_fault
+    device_class: problem
+    lambda: |-
+      if (id(status_14).has_state()) {
+        int s14 = int(id(status_14).state);
+        return (s14 == 1);
+      }
+      return false;
+
+# ─── Text Sensors ──────────────────────────────────────────
+text_sensor:
+
+  # Human-readable charge state
+  - platform: template
+    name: "Battery State"
+    id: battery_state
+    lambda: |-
+      if (!id(status_14).has_state()) {
+        return std::string("Unknown");
+      }
+      int s14 = int(id(status_14).state);
+      if (s14 == 1) return std::string("Fault");
+      if (s14 == 2) return std::string("Charging");
+      if (s14 == 3) return std::string("Discharging");
+      if (s14 == 4) return std::string("Idle");
+      return std::string("Other");
+    update_interval: 10s
+
+  - platform: wifi_info
+    ip_address:
+      name: "ESP IP Address"
+      entity_category: diagnostic
